@@ -1,22 +1,32 @@
-from src.hyperion.database.operations import add_prospect, enroll_prospect_in_sequence
-from src.hyperion.database.operations import initialize_database
+from src.hyperion.reply_parser import ingest_and_filter_replies, classify_intent
 
 if __name__ == "__main__":
-    initialize_database()
+    print("--- Starting Hyperion Test: Full Triage Chain ---")
+    
+    # We don't need to add the prospect to the DB for this test,
+    # as they should still be in there from the last run.
+    
+    print("\n-> Running the reply ingestor and filter...")
+    replies = ingest_and_filter_replies()
 
-    real_world_prospect = {
-        'id': 'prospect_aaryan_01',
-        'name': 'Tim Cook',
-        'email': 'aaryankakad1@gmail.com',
-        'title': 'CEO',
-        'organization': {
-            'name': 'Apple',
-            'primary_domain': 'apple.com'
-        }
-    }
-
-    print(f"--- Enrolling a real-world test prospect: {real_world_prospect['name']} ---")
-    add_prospect(real_world_prospect)
-    enroll_prospect_in_sequence(real_world_prospect['id'], 'seq_standard_01')
-
-    print("--- Enrollment complete. The scheduler now has a high-quality record to process. ---")
+    if replies:
+        print(f"\n✅ Filtered and found {len(replies)} qualified reply/replies.")
+        
+        # Process the first qualified reply
+        reply = replies[0]
+        print(f"  - Processing reply from: {reply['from']}")
+        
+        # --- THE FINAL AI STEP ---
+        # Classify the intent of the email body
+        intent = classify_intent(reply['body'])
+        
+        if intent:
+            print(f"\n✅ --- TRIAGE COMPLETE ---")
+            print(f"  - Prospect ID: {reply['prospect_id']}")
+            print(f"  - Subject: {reply['subject']}")
+            print(f"  - Intent: {intent}")
+            print("-------------------------")
+        else:
+            print("\n❌ Failed to classify the email's intent.")
+    else:
+        print("\n--- Test finished. No replies from known prospects were found. ---")
