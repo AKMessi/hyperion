@@ -6,6 +6,8 @@ from dotenv import load_dotenv
 from typing import List, Dict, Optional
 import google.generativeai as genai
 from src.hyperion.database.operations import get_prospect_by_email
+from src.hyperion.database.operations import update_prospect_status
+from src.hyperion.email_sender import send_email
 
 def _decode_header(header):
     """
@@ -136,3 +138,23 @@ def classify_intent(email_body: str) -> Optional[str]:
     except Exception as e:
         print(f" - An error occurred during intent classification: {e}")
         return None
+    
+def dispatch_action(prospect: Dict, intent: str):
+    """
+    Takes action based on the classified intent.
+    """
+
+    print(f"\n--- Node: Dispatching Action for Intent: {intent} ---")
+    
+    update_prospect_status(prospect['id'], 'replied')
+
+    if intent == "POSITIVE_INTEREST":
+        notification_subject = f"✅ Positive Reply from {prospect['full_name']}"
+        notification_body = (
+            f"Hyperion detected a positive reply from {prospect['full_name']} ({prospect['email']}).\n\n"
+            "Take over the conversation and book the meeting.\n\n"
+            f"Company: {prospect['company_name']}"
+        )
+        our_email = os.getenv("SENDER_EMAIL")
+        send_email(our_email, notification_subject, notification_body)
+        print("  - Positive lead notification sent.")

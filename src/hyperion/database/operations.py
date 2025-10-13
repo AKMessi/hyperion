@@ -177,7 +177,7 @@ def get_prospect_by_id(prospect_id: str) -> Optional[Dict]:
     Reads a prospect's data from the database using their unique prospect_id
     and reconstructs the nested dictionary format the agent expects.
     """
-    
+
     conn = sqlite3.connect(DATABASE_FILE)
     conn.row_factory = sqlite3.Row 
     cursor = conn.cursor()
@@ -223,3 +223,19 @@ def clear_all_sequence_actions():
     conn.close()
     
     print(f"-> Cleared the 'prospect_sequences' table. {rows_deleted} action(s) removed.")
+
+def update_prospect_status(prospect_id: str, status: str):
+    """
+    Updates the status of a prospect in all their sequences.
+    """
+
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+
+    sql = "UPDATE prospect_sequences SET status = ? WHERE prospect_id = ?"
+    cursor.execute(sql, (status, prospect_id))
+
+    conn.commit()
+    conn.close()
+    
+    print(f"  - Status for prospect {prospect_id} updated to '{status}'.")

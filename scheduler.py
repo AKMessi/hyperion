@@ -22,7 +22,7 @@ def run_scheduler():
                 print("  - No actions due.")
             else:
                 print(f"  - Found {len(due_actions)} due action(s). Processing...")
-                for action in due_actions:
+                for i, action in enumerate(due_actions):
                     prospect_id = action['prospect_id']
                     
                     prospect = get_prospect_by_id(prospect_id)
@@ -61,6 +61,10 @@ def run_scheduler():
                             wait_days
                         )
                         print(f"    -> Action complete. Email sent and prospect rescheduled.")
+
+                        if i < len(due_actions) - 1:
+                            print(f"    -> Pacing delay: Waiting 5 minutes before next email...")
+                            time.sleep(300)
                     else:
                         print(f"    -> Email send failed. Will retry on next scheduler run.")
 
