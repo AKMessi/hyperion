@@ -135,6 +135,7 @@ def scrape_and_summarize_content(state: AgentState) -> Dict:
                     response.raise_for_status()
 
                     article = Article(url)
+                    article.download()
                     article.html = response.text
 
                     article.parse()

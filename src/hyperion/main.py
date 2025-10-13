@@ -8,8 +8,8 @@ if __name__ == "__main__":
 
     # define the prospect to research
     mock_prospect = {
-        "name": "Navaz Malikakkal",
-        "organization": { "name": "Interarch Building Products" }
+        "name": "Changpeng Zhao",
+        "organization": { "name": "Binance" }
     }
     
     # this is the initial input for our agent's state
