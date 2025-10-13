@@ -1,4 +1,4 @@
-from agents.research_agent import build_agent_graph
+from agents.research_agent import build_agent_graph, generate_email
 
 if __name__ == "__main__":
     print("--- Initializing Hyperion Agent ---")
@@ -8,20 +8,41 @@ if __name__ == "__main__":
 
     # define the prospect to research
     mock_prospect = {
-        "name": "Changpeng Zhao",
-        "organization": { "name": "Binance" }
+        "name": "Harry Dry",
+        "title": "Founder", # Add title for the email generation step
+        "organization": { "name": "Marketing Examples" }
     }
     
-    # this is the initial input for our agent's state
+    # initial input
     inputs = {
         "prospect": mock_prospect,
-        "max_retries": 1
+        "max_retries": 1 
     }
 
-    print("\n--- Invoking Agent ---")
-    # the .invoke() method runs the entire graph from start to finish
+    print("\n--- Invoking Agent for Research ---")
+    # run the entire research graph from start to finish
     final_state = app.invoke(inputs)
 
-    print("\n\n--- AGENT RUN COMPLETE ---")
-    print(f"Prospect: {final_state['prospect']['name']}")
-    print(f"Final Hook: {final_state['hook']}")
+    print("\n\n--- RESEARCH PHASE COMPLETE ---")
+    
+    hook = final_state.get('hook')
+
+    if hook:
+        print(f"Successfully generated hook: '{hook}'")
+        
+        # email generation
+        final_email = generate_email(mock_prospect, hook)
+        
+        if final_email:
+            print("\n✅ --- GENERATION COMPLETE ---")
+            print("Final Email Output:")
+            print("---------------------------------")
+            print(final_email)
+            print("---------------------------------")
+        else:
+            print("\n❌ Agent failed at Email Generation stage.")
+    else:
+        print("\n❌ Research agent failed to produce a hook. Halting process.")
+
+
+    print("\n--- Hyperion Test Finished ---")
