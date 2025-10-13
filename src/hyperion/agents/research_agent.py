@@ -27,42 +27,62 @@ class AgentState(TypedDict):
     max_retries: int
     retries: int
 
-def generate_search_queries(state: AgentState) -> Dict:
-    """
-    Node: Generates search queries based on the prospect.
-    """
-
+def scrape_website_for_context(state: AgentState) -> Dict:
+    """NEW Node: Scrapes the prospect's company website for initial context."""
+    print("\n--- Node: Scraping Website for Context ---")
     prospect = state['prospect']
-    prospect_name = prospect.get('name')
+    website_url = prospect.get('organization', {}).get('primary_domain')
+
+    if not website_url:
+        print("  - No website URL found for prospect. Skipping context grounding.")
+        return {"website_context": "No website data available."}
+
+    if not website_url.startswith(('http://', 'https://')):
+        website_url = 'https://' + website_url
+
+    try:
+        firecrawl_api_key = os.getenv("FIRECRAWL_API_KEY")
+        app = FirecrawlApp(api_key=firecrawl_api_key)
+        scraped_data = app.scrape(website_url)
+
+        if scraped_data and scraped_data[0] and 'markdown' in scraped_data[0]:
+            content = scraped_data[0]['markdown']
+            model = genai.GenerativeModel('gemini-2.5-flash')
+            prompt = f"Read the following website content and summarize what this company does in one single, concise sentence.\n\nContent:\n---\n{content[:10000]}"
+            response = model.generate_content(prompt)
+            summary = response.text.strip()
+            print(f"  - Website Context: {summary}")
+            return {"website_context": summary}
+        else:
+            print("  - Failed to scrape website for context.")
+            return {"website_context": "Failed to retrieve website data."}
+    except Exception as e:
+        print(f"  - An error occurred during website context scraping: {e}")
+        return {"website_context": "An error occurred during scraping."}
+
+def generate_search_queries(state: AgentState) -> Dict:
+    """UPGRADED Node: Now uses website context to generate better queries."""
+    prospect = state['prospect']
+    website_context = state['website_context']
+    prospect_name = prospect.get('name', '')
     company_name = prospect.get('organization', {}).get('name', '')
 
-    if not prospect_name or not company_name:
-        print("Error: Prospect name or company name is missing.")
-        return None
+    print(f"\n--- Node: Generating Search Queries (with context) ---")
+    model = genai.GenerativeModel('gemini-1.5-flash-latest')
     
-    print(f"\n Generating search queries for {prospect_name} at {company_name}...")
-
-    model = genai.GenerativeModel("gemini-2.5-flash")
-
     prompt = (
-            "You are a world-class Sales Development Representative (SDR) and research analyst. "
-            f"You have been given a prospect's name, '{prospect_name}', and their company, '{company_name}'.\n"
-            "Your goal is to generate 3 to 5 diverse and insightful Google search queries to find a recent, personalized 'hook' for a cold email. "
-            "Good queries are about recent company news, funding rounds, product launches, executive keynotes, or personal achievements.\n"
-            "Bad queries are generic searches for the company homepage or the person's LinkedIn profile.\n"
-            "Return your response as a JSON-formatted list of strings. For example: "
-            '["query 1", "query 2", "query 3"]'
-        )
-
+        f"You are a research analyst. You are researching a person named '{prospect_name}' at a company called '{company_name}'.\n"
+        f"Here is a summary of what the company does: '{website_context}'\n\n"
+        "Based on this, generate 3 highly specific and relevant Google search queries to find a recent, personalized 'hook'. "
+        "Focus on finding news, recent projects, or achievements related to their specific industry.\n"
+        "Return your response as a JSON-formatted list of strings."
+    )
+    
     response = model.generate_content(prompt)
-
     json_response = response.text.strip().replace("```json\n", "").replace("\n```", "")
-
     queries = json.loads(json_response)
-
-    print(f" - Successfully generated search queries.")
+    
     print(f"Generated Queries: {queries}")
-
     return {"queries": queries, "retries": 0}
 
 def execute_web_search(state: AgentState) -> Dict:
@@ -240,35 +260,32 @@ def prepare_for_retry(state:AgentState) -> Dict:
 # building the agent graph
 
 def build_agent_graph():
-    """
-    Builds the LangGraph agent.
-    """
-
+    """Builds the upgraded LangGraph agent with the new context node."""
     load_dotenv()
     google_api_key = os.getenv("GOOGLE_API_KEY")
     genai.configure(api_key=google_api_key)
 
     graph = StateGraph(AgentState)
 
+    # Add all nodes, including the new one
+    graph.add_node("scrape_website_for_context", scrape_website_for_context)
     graph.add_node("generate_queries", generate_search_queries)
     graph.add_node("web_search", execute_web_search)
     graph.add_node("scrape_and_summarize", scrape_and_summarize_content)
     graph.add_node("synthesize_hook", synthesize_hook)
     graph.add_node("prepare_for_retry", prepare_for_retry)
 
-    graph.set_entry_point("generate_queries")
-
+    # --- New Graph Structure ---
+    graph.set_entry_point("scrape_website_for_context")
+    graph.add_edge("scrape_website_for_context", "generate_queries") # New first step
     graph.add_edge("generate_queries", "web_search")
     graph.add_edge("web_search", "scrape_and_summarize")
     graph.add_edge("scrape_and_summarize", "synthesize_hook")
-
+    
     graph.add_conditional_edges(
         "synthesize_hook",
         should_continue,
-        {
-            "retry": "prepare_for_retry",
-            "end": END
-        }
+        {"retry": "prepare_for_retry", "end": END}
     )
     graph.add_edge("prepare_for_retry", "web_search")
 
