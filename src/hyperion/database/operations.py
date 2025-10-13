@@ -171,3 +171,55 @@ def get_sequence_state_by_id(prospect_sequence_id: int) -> Optional[Dict]:
     record = cursor.fetchone()
     conn.close()
     return dict(record) if record else None
+
+def get_prospect_by_id(prospect_id: str) -> Optional[Dict]:
+    """
+    Reads a prospect's data from the database using their unique prospect_id
+    and reconstructs the nested dictionary format the agent expects.
+    """
+    
+    conn = sqlite3.connect(DATABASE_FILE)
+    conn.row_factory = sqlite3.Row 
+    cursor = conn.cursor()
+
+    sql_command = "SELECT * FROM prospects WHERE prospect_id = ?"
+    
+    cursor.execute(sql_command, (prospect_id,))
+    
+    prospect_row = cursor.fetchone()
+    
+    conn.close()
+    
+    if prospect_row:
+        return {
+            "id": prospect_row["prospect_id"],
+            "name": prospect_row["full_name"],
+            "email": prospect_row["email"],
+            "linkedin_url": prospect_row["linkedin_url"],
+            "title": prospect_row["title"],
+            "organization": {
+                "name": prospect_row["company_name"],
+                "primary_domain": prospect_row["company_domain"]
+            }
+        }
+    return None
+
+def clear_all_sequence_actions():
+    """
+    Deletes all records from the prospect_sequences table.
+    This is useful for resetting the scheduler's queue during testing.
+    """
+
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+
+    sql_command = "DELETE FROM prospect_sequences"
+
+    cursor.execute(sql_command)
+    
+    rows_deleted = cursor.rowcount
+
+    conn.commit()
+    conn.close()
+    
+    print(f"-> Cleared the 'prospect_sequences' table. {rows_deleted} action(s) removed.")
