@@ -150,3 +150,56 @@ def generate_search_queries(prospect: Dict) -> Optional[List[str]]:
     except Exception as e:
         print(f"An error occurred during query generation: {e}")
         return None
+    
+def synthesize_hook(summary: str, prospect_name:str) -> Optional[str]:
+    """
+    Uses Gemini 2.5 Pro to synthesize a personalized hook from a summary.
+
+    Args:
+        summary: The summary of the article to use for the hook.
+
+    Returns:
+        A single, compelling hook sentence, or None if an error occurs.
+    """
+
+    if not summary:
+        print("Error: Summary is empty.")
+        return None
+    
+    print("Synthesizig hook with Gemini 2.5 Pro...")
+
+    try:
+        load_dotenv()
+        google_api_key = os.getenv("GOOGLE_API_KEY")
+        if not google_api_key:
+            raise ValueError("ERROR: GOOGLE_API_KEY not found in the environment variables.")
+        
+        genai.configure(api_key=google_api_key)
+
+        model = genai.GenerativeModel("gemini-2.5-pro")
+
+        prompt = (
+            "You are an expert-level Sales Development Representative. Your task is to write a single, compelling, personalized sentence to use as a 'hook' in a cold email. "
+            f"You will be given a summary of a recent news article or blog post. Your hook should directly reference this information and feel personal to the recipient, '{prospect_name}'.\n\n"
+            "Here are the rules:\n"
+            "1. It must be a single sentence.\n"
+            "2. It must be concise and impactful.\n"
+            "3. It must sound natural and human.\n"
+            "4. It must NOT be a question.\n\n"
+            "Example:\n"
+            "Summary: 'ExampleCorp announced a $50M Series C funding round to expand its AI-driven platform.'\n"
+            f"Hook: 'Saw the news about ExampleCorp's recent $50M Series C, and was really impressed by the vision for the AI platform, {prospect_name}.'\n\n"
+            f"Now, use the following summary to generate a hook for {prospect_name}:\n\n"
+            f"Summary:\n---\n{summary}"
+        )
+
+        response = model.generate_content(prompt)
+
+        hook = response.text.strip().replace('"', '')
+
+        print("Successfully synthesized hook.")
+        return hook
+    
+    except Exception as e:
+        print(f"An error occurred during hook synthesis: {e}")
+        return None
