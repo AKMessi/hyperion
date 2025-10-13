@@ -21,6 +21,7 @@ def load_prompt(file_name: str) -> str:
 class AgentState(TypedDict):
     prospect: Dict
     queries: Optional[List[str]]
+    website_context: Optional[str]
     search_results: Optional[List[Dict]]
     summaries: Optional[List[str]]
     hook: Optional[str]
@@ -28,47 +29,51 @@ class AgentState(TypedDict):
     retries: int
 
 def scrape_website_for_context(state: AgentState) -> Dict:
-    """NEW Node: Scrapes the prospect's company website for initial context."""
+    """FINAL Node: Scrapes the prospect's company website for initial context."""
     print("\n--- Node: Scraping Website for Context ---")
-    prospect = state['prospect']
-    website_url = prospect.get('organization', {}).get('primary_domain')
-
-    if not website_url:
-        print("  - No website URL found for prospect. Skipping context grounding.")
-        return {"website_context": "No website data available."}
-
-    if not website_url.startswith(('http://', 'https://')):
-        website_url = 'https://' + website_url
-
+    context_summary = "No context available." # Default value
     try:
+        prospect = state['prospect']
+        website_url = prospect.get('organization', {}).get('primary_domain')
+
+        if not website_url:
+            raise ValueError("No website URL found for prospect.")
+
+        if not website_url.startswith(('http://', 'https://')):
+            website_url = 'https://' + website_url
+
         firecrawl_api_key = os.getenv("FIRECRAWL_API_KEY")
         app = FirecrawlApp(api_key=firecrawl_api_key)
         scraped_data = app.scrape(website_url)
 
-        if scraped_data and scraped_data[0] and 'markdown' in scraped_data[0]:
-            content = scraped_data[0]['markdown']
+        if scraped_data and scraped_data.markdown:
+            content = scraped_data.markdown
             model = genai.GenerativeModel('gemini-2.5-flash')
-            prompt = f"Read the following website content and summarize what this company does in one single, concise sentence.\n\nContent:\n---\n{content[:10000]}"
+            prompt = f"Summarize what this company does in one single, concise sentence based on their website content:\n\n{content[:10000]}"
             response = model.generate_content(prompt)
-            summary = response.text.strip()
-            print(f"  - Website Context: {summary}")
-            return {"website_context": summary}
+            context_summary = response.text.strip()
         else:
-            print("  - Failed to scrape website for context.")
-            return {"website_context": "Failed to retrieve website data."}
+            raise ValueError("FireCrawl failed to extract markdown content.")
+
     except Exception as e:
-        print(f"  - An error occurred during website context scraping: {e}")
-        return {"website_context": "An error occurred during scraping."}
+        print(f"  - An error occurred during context scraping: {e}")
+        context_summary = f"An error occurred during scraping: {e}"
+    
+    print(f"  - Website Context Found: {context_summary}")
+    return {"website_context": context_summary}
+    
 
 def generate_search_queries(state: AgentState) -> Dict:
-    """UPGRADED Node: Now uses website context to generate better queries."""
+    """
+    Node: Now uses website context to generate better queries.
+    """
     prospect = state['prospect']
     website_context = state['website_context']
     prospect_name = prospect.get('name', '')
     company_name = prospect.get('organization', {}).get('name', '')
 
     print(f"\n--- Node: Generating Search Queries (with context) ---")
-    model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    model = genai.GenerativeModel('gemini-2.5-flash')
     
     prompt = (
         f"You are a research analyst. You are researching a person named '{prospect_name}' at a company called '{company_name}'.\n"
@@ -110,76 +115,46 @@ def execute_web_search(state: AgentState) -> Dict:
 
 def scrape_and_summarize_content(state: AgentState) -> Dict:
     """
-    Node: A tiered scraper that tries multiple methods to extract and summarize content.
-    1. Handles PDFs using pypdf.
-    2. Tries FireCrawl for JavaScript-heavy sites.
-    3. Falls back to a simple requests+newspaper3k for basic articles.
+    Node: A tiered scraper with the FINAL FireCrawl logic.
     """
     search_results = state['search_results']
     print("\n--- Node: Scraping and Summarizing (Tiered Method) ---")
-
     summaries = []
-    urls_to_scrape = [result.get('link') for result in search_results[:3]]
-    firecrawl_api_key = os.getenv("FIRECRAWL_API_KEY")
-
-    if not firecrawl_api_key:
-        raise ValueError("ERROR: FIRECRAWL_API_KEY not found.")
-
-    firecrawl_app = FirecrawlApp(api_key=firecrawl_api_key)
+    urls = [result.get('link') for result in search_results[:3]]
+    firecrawl_app = FirecrawlApp(api_key=os.getenv("FIRECRAWL_API_KEY"))
     
-    for url in urls_to_scrape:
+    for url in urls:
         if not url: continue
-        
         print(f"Scraping: {url}")
         content = ""
-
         try:
-            # method 1: Handle PDFs
             if url.lower().endswith('.pdf'):
-                print("  - Detected PDF. Using pypdf...")
                 headers = {'User-Agent': 'Mozilla/5.0...'}
-
                 response = requests.get(url, headers=headers, timeout=10)
                 response.raise_for_status()
-
                 reader = PdfReader(io.BytesIO(response.content))
                 content = " ".join(page.extract_text() for page in reader.pages)
-
             else:
-                # method 2: Try FireCrawl first
-                print("  - Attempting FireCrawl...")
                 scraped_data = firecrawl_app.scrape(url)
-                
-                if scraped_data and isinstance(scraped_data, list) and scraped_data[0] and 'markdown' in scraped_data[0]:
-                    content = scraped_data[0]['markdown']
-
+                if scraped_data and scraped_data.markdown:
+                    content = scraped_data.markdown
                 else:
-                    # method 3: Fallback to requests + newspaper3k
                     print("  - FireCrawl failed. Falling back to newspaper3k...")
                     headers = {'User-Agent': 'Mozilla/5.0...'}
-
                     response = requests.get(url, headers=headers, timeout=10)
                     response.raise_for_status()
-
                     article = Article(url)
-                    article.download()
                     article.html = response.text
-
                     article.parse()
                     content = article.text
-
+            
             if content:
                 print("  - Successfully extracted content.")
-
-                # summarize the extracted content with Gemini
                 model = genai.GenerativeModel('gemini-2.5-flash')
-                prompt = f"Summarize the following text in 2-3 sentences, focusing on the core message:\n\n{content[:15000]}"
-                
-                summary_response = model.generate_content(prompt)
-                summaries.append(summary_response.text)
-
+                prompt = f"Summarize the following text in 2-3 sentences:\n\n{content[:15000]}"
+                summaries.append(model.generate_content(prompt).text)
             else:
-                print("  - All scraping methods failed to extract content.")
+                print("  - All scraping methods failed.")
 
         except Exception as e:
             print(f"  - An error occurred: {e}")
@@ -296,9 +271,15 @@ def generate_email(prospect: Dict, hook: str) -> Optional[str]:
     Uses Gemini 2.5 Pro to generate a complete, personalized outreach email
     by loading and formatting an external prompt template.
     """
-    print("\n--- Node: Generating Final Email ---")
-    
+    print("\n--- Node: Generating Final Email (from template) ---")
     try:
+        load_dotenv()
+        agency_name = os.getenv("AGENCY_NAME")
+        agency_value_prop = os.getenv("AGENCY_VALUE_PROP")
+
+        if not agency_name or not agency_value_prop:
+            raise ValueError("AGENCY_NAME or AGENCY_VALUE_PROP not set in .env file.")
+
         prospect_first_name = prospect.get('name', '').split(' ')[0]
         
         prompt_template = load_prompt("generate_email.md")
@@ -307,12 +288,19 @@ def generate_email(prospect: Dict, hook: str) -> Optional[str]:
             prospect_first_name=prospect_first_name,
             prospect_title=prospect.get('title', 'a key leader'),
             company_name=prospect.get('organization', {}).get('name', ''),
-            hook=hook
+            hook=hook,
+            your_agency_name=agency_name,
+            your_agency_value_prop=agency_value_prop
         )
         
-        model = genai.GenerModel('gemini-2.5-pro')
+        google_api_key = os.getenv("GOOGLE_API_KEY")
+        if not google_api_key:
+            raise ValueError("GOOGLE_API_KEY not found.")
+        genai.configure(api_key=google_api_key)
+        
+        model = genai.GenerativeModel('gemini-2.5-pro')
         response = model.generate_content(prompt)
-        print("  - Successfully generated email from template.")
+        print("  - Successfully generated email from upgraded template.")
         return response.text.strip()
 
     except Exception as e:
