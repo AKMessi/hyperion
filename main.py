@@ -1,66 +1,64 @@
-# main.py - Final Guided Triage Test
-
-from src.hyperion.database.operations import initialize_database, add_prospect, get_prospect_by_id, clear_all_sequence_actions
-from src.hyperion.reply_parser import ingest_and_filter_replies, classify_intent, dispatch_action
+from src.hyperion.database.operations import initialize_database, add_prospect, get_prospect_by_id
+from src.hyperion.agents.research_agent import build_agent_graph, generate_email
+from src.hyperion.config import DATABASE_FILE
 import os
 
-def run_final_test():
-    """A guided, interactive test for the full triage workflow."""
-    
-    # --- SETUP ---
-    print("--- Starting Final Guided Test for Hyperion Triage Engine ---")
-    initialize_database()
-    clear_all_sequence_actions() # Start with a clean queue
-
-    prospect_email_to_reply_from = 'kakadaaryan10@gmail.com'
-    app_email_to_receive_reply = os.getenv("SENDER_EMAIL")
-
-    test_prospect = {
-        'id': 'prospect_final_test_01',
-        'name': 'Final Test',
-        'email': prospect_email_to_reply_from,
-        'title': 'Lead Prospect',
-        'organization': {'name': 'Final Test Inc.'}
-    }
-    add_prospect(test_prospect)
-    print(f"\nStep 1: Prospect '{prospect_email_to_reply_from}' has been added/verified in the database.")
-
-    # --- MANUAL ACTION REQUIRED ---
-    print("\n" + "="*60)
-    print(">>> ACTION REQUIRED <<<")
-    print(f"Please manually send a test email NOW with the following details:")
-    print(f"  - FROM: {prospect_email_to_reply_from}")
-    print(f"  - TO:   {app_email_to_receive_reply}")
-    print(f"  - SUBJECT: Final Test Run")
-    print(f"  - BODY:    This looks very interesting, please send more details.")
-    print("="*60)
-    
-    input("\n>>> Once the email is sent and appears as UNREAD in the inbox, press Enter to continue...")
-
-    # --- TRIAGE EXECUTION ---
-    print("\nStep 2: Resuming script. Ingesting and filtering replies...")
-    replies = ingest_and_filter_replies()
-
-    if replies:
-        reply = replies[0]
-        prospect = get_prospect_by_id(reply['prospect_id'])
-        
-        if prospect:
-            intent = classify_intent(reply['body'])
-            
-            if intent:
-                dispatch_action(prospect, intent)
-                print(f"\n✅ --- FULL TRIAGE COMPLETE ---")
-                print(f"  - Prospect: {prospect['full_name']}")
-                print(f"  - Intent: {intent}")
-                print(f"  - Action: Dispatched (Notification sent to {app_email_to_receive_reply})")
-                print("---------------------------------")
-    else:
-        print("\n❌ --- TEST FAILED ---")
-        print("No qualified reply was found. Please check:")
-        print("  1. The reply was sent FROM the correct address.")
-        print("  2. The reply was sent TO the correct address.")
-        print("  3. The reply was UNREAD in the inbox when you pressed Enter.")
-
 if __name__ == "__main__":
-    run_final_test()
+    print("--- Starting Hyperion Test: Upgraded 'Website-First' Agent ---")
+    
+    # Step 1: Initialize the database to ensure it's ready.
+    initialize_database()
+    print("-> Database initialized.")
+
+    # Step 2: Define a high-quality test prospect.
+    # The agent will use the 'primary_domain' to find the website.
+    mock_prospect = {
+        'id': 'prospect_final_test_01',
+        'name': 'Amirani Azaladze',
+        'email': 'a.azaladze@b2bhub.ge',
+        'title': 'Co-Founder',
+        'organization': {
+            'name': 'B2B Hub',
+            'primary_domain': 'b2bhub.ge' # The agent will scrape this URL
+        }
+    }
+    
+    # Add the prospect to the DB (this also serves as a quick DB test)
+    add_prospect(mock_prospect)
+    print(f"-> Ensured prospect '{mock_prospect['name']}' is in the database.")
+
+    # Step 3: Build and invoke the autonomous research agent.
+    print("\n--- Invoking Agent for Research ---")
+    research_agent = build_agent_graph()
+    
+    # The agent's input is a dictionary matching the structure of our AgentState
+    agent_input = { "prospect": mock_prospect }
+    
+    # Run the agent from start to finish
+    final_state = research_agent.invoke(agent_input)
+
+    print("\n\n--- RESEARCH PHASE COMPLETE ---")
+    
+    # Step 4: Extract the results from the agent's final state.
+    hook = final_state.get('hook')
+    source_url = final_state.get('source_url')
+
+    if hook and source_url:
+        print(f"  - Source URL: {source_url}")
+        print(f"  - Generated Hook: '{hook}'")
+        
+        # Step 5: If research was successful, generate the final email.
+        final_email = generate_email(mock_prospect, hook)
+        
+        if final_email:
+            print("\n✅ --- GENERATION COMPLETE ---")
+            print("Final Email Output:")
+            print("---------------------------------")
+            print(final_email)
+            print("---------------------------------")
+        else:
+            print("\n❌ Agent failed at the Email Generation stage.")
+    else:
+        print("\n❌ Research agent failed to produce a valid hook or source URL.")
+
+    print("\n--- Hyperion Test Finished ---")
