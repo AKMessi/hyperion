@@ -4,17 +4,14 @@ from datetime import datetime, timezone
 from src.hyperion.database.operations import (
     initialize_database, get_due_actions,
     update_sequence_after_send, get_prospect_by_id,
-    update_prospect_status  # Import the status update function
+    update_prospect_status
 )
 from src.hyperion.email_sender import send_email
 from src.hyperion.agents.research_agent import build_agent_graph, generate_email
 
 def run_scheduler():
-    """
-    The final, production-ready scheduler. It uses the template-driven
-    email generator and intelligently handles research failures.
-    """
-    print("--- Hyperion Scheduler [v4.0 FINAL] is starting up... ---")
+    """The final, production-ready scheduler."""
+    print("--- Hyperion Scheduler [v5.0 FINAL] is starting up... ---")
     initialize_database()
     research_agent = build_agent_graph()
     
@@ -35,7 +32,7 @@ def run_scheduler():
                     
                     if not prospect:
                         print(f"  - Skipping: Prospect data not found for id {prospect_id}")
-                        update_prospect_status(prospect_id, 'failed') # Mark as failed
+                        update_prospect_status(prospect_id, 'failed')
                         continue
 
                     print(f"    -> Processing Step {action['current_step']} for {prospect['name']}...")
@@ -46,7 +43,6 @@ def run_scheduler():
                         final_state = research_agent.invoke(agent_input)
                         hook = final_state.get('hook')
 
-                        # This is our new quality gate
                         if hook and "No compelling hook found." not in hook:
                             print(f"    -> AI Research successful. Hook: '{hook}'")
                             email_content = generate_email(prospect, hook)
@@ -67,12 +63,10 @@ def run_scheduler():
                                     print(f"    - Error parsing or sending email: {e}")
                                     update_prospect_status(prospect_id, 'failed')
                         else:
-                            # If the hook is invalid, log it, mark as failed, and skip.
                             print(f"    -> AI could not find a compelling hook. Skipping prospect.")
                             update_prospect_status(prospect_id, 'failed')
                             continue
                     else:
-                        # Follow-up logic (currently placeholder)
                         print("    -> Follow-up steps not yet implemented. Finishing sequence.")
                         update_prospect_status(prospect_id, 'finished')
 
