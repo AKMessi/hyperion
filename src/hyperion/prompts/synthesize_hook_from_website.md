@@ -30,5 +30,7 @@ Be Specific & Verifiable: The hook must contain a specific detail that proves yo
 
 Fail Safely: If, even after filtering, the provided raw content is too generic to find a specific, impressive insight, you MUST respond with only the words "No compelling hook found."
 
-Raw Website Content: {refined_content}
+Raw Website Content:
+{raw_website_content}
+
 Based on the content and the rules above, generate the single-sentence hook:

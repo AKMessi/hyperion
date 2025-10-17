@@ -279,12 +279,11 @@ def build_agent_graph():
     load_dotenv(); genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
     graph = StateGraph(AgentState)
     graph.add_node("scrape_website", scrape_website)
-    graph.add_node("refine_content", refine_content)
     graph.add_node("synthesize_hook_from_website", synthesize_hook_from_website)
     graph.set_entry_point("scrape_website")
-    graph.add_edge("scrape_website", "refine_content")
-    graph.add_edge("refine_content", "synthesize_hook_from_website")
+    graph.add_edge("scrape_website", "synthesize_hook_from_website")
     graph.add_edge("synthesize_hook_from_website", END)
+
     return graph.compile()
 
 # def generate_email(prospect: Dict, hook: str) -> Optional[str]:
@@ -361,42 +360,16 @@ def scrape_website(state: AgentState) -> Dict:
 
     return {"website_content": content, "source_url": url}
 
-def refine_content(state: AgentState) -> Dict:
-    print("\n--- Node: 2. Refining Content ---")
-    website_content = state.get('website_content', '')
-    if "Error:" in website_content:
-        return {"refined_content": website_content}
-    try:
-        model = genai.GenerativeModel('gemini-2.5-flash')
-        prompt_template = load_prompt("refine_website_content.md")
-        prompt = prompt_template.format(website_content=website_content[:15000])
-
-        safety_settings = {
-            'HARM_CATEGORY_HARASSMENT': 'BLOCK_NONE',
-            'HARM_CATEGORY_HATE_SPEECH': 'BLOCK_NONE',
-            'HARM_CATEGORY_SEXUALLY_EXPLICIT': 'BLOCK_NONE',
-            'HARM_CATEGORY_DANGEROUS_CONTENT': 'BLOCK_NONE',
-        }
-
-        response = model.generate_content(prompt, safety_settings=safety_settings)
-        refined = response.text.strip()
-        print("  - Successfully refined website content.")
-        print(f"\n Refined content: \n {refined}")
-        return {"refined_content": refined}
-    except Exception as e:
-        print(f"  - An error occurred during refinement: {e}")
-        return {"refined_content": f"Error: {e}"}
-
 def synthesize_hook_from_website(state: AgentState) -> Dict:
     """
     Node: Uses website content and a new, more advanced prompt to create a high-quality hook.
     """
 
-    print("\n--- Node: Synthesizing Hook from Website (v2) ---")
-    refined_content = state.get('refined_content', '')
+    print("\n--- Node: Synthesizing Hook from Website (v6) ---")
+    raw_website_content = state.get('website_content', '')
     prospect = state.get('prospect', {})
     
-    if "error" in refined_content.lower() or "failed" in refined_content.lower():
+    if "error" in raw_website_content.lower() or "failed" in raw_website_content.lower():
         return {"hook": None}
 
     try:
@@ -409,7 +382,7 @@ def synthesize_hook_from_website(state: AgentState) -> Dict:
             prospect_first_name=prospect_first_name,
             prospect_title=prospect_title,
             company_name=company_name,
-            website_content=refined_content[:12000]
+            raw_website_content=raw_website_content[:12000]
         )
         
         response = model.generate_content(prompt)
