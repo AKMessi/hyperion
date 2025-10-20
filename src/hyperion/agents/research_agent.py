@@ -11,6 +11,7 @@ from firecrawl import FirecrawlApp
 import io
 from pypdf import PdfReader
 from src.hyperion.config import PROJECT_ROOT
+from tavily import TavilyClient
 
 def load_prompt(file_name: str) -> str:
     """Loads a prompt template from the prompts directory."""
@@ -27,8 +28,11 @@ class AgentState(TypedDict):
     hook: Optional[str]
     max_retries: int
     retries: int
-    refined_content: Optional[str]
     source_url: Optional[str]
+    research_question: Optional[str]
+    research_summary: Optional[str]
+    company_research: Optional[str]
+    person_research: Optional[str]
 
 def scrape_website_for_context(state: AgentState) -> Dict:
     """
@@ -271,20 +275,20 @@ def prepare_for_retry(state:AgentState) -> Dict:
 
 #     return graph.compile()
 
-def build_agent_graph():
-    """
-    Builds the simplified, more reliable 'Website-First' agent.
-    """
+# def build_agent_graph():
+#     """
+#     Builds the simplified, more reliable 'Website-First' agent.
+#     """
 
-    load_dotenv(); genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-    graph = StateGraph(AgentState)
-    graph.add_node("scrape_website", scrape_website)
-    graph.add_node("synthesize_hook_from_website", synthesize_hook_from_website)
-    graph.set_entry_point("scrape_website")
-    graph.add_edge("scrape_website", "synthesize_hook_from_website")
-    graph.add_edge("synthesize_hook_from_website", END)
+#     load_dotenv(); genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+#     graph = StateGraph(AgentState)
+#     graph.add_node("scrape_website", scrape_website)
+#     graph.add_node("synthesize_hook_from_website", synthesize_hook_from_website)
+#     graph.set_entry_point("scrape_website")
+#     graph.add_edge("scrape_website", "synthesize_hook_from_website")
+#     graph.add_edge("synthesize_hook_from_website", END)
 
-    return graph.compile()
+#     return graph.compile()
 
 # def generate_email(prospect: Dict, hook: str) -> Optional[str]:
 #     """
@@ -327,38 +331,30 @@ def build_agent_graph():
 #         print(f"  - An error occurred during email generation: {e}")
 #         return None
 
-def scrape_website(state: AgentState) -> Dict:
+def scrape_company_website(state: AgentState) -> Dict:
     """
-    Node: Scrapes the website and returns both the content and the source URL.
+    Node: The reliable fallback scraper for company-centric hooks.
     """
 
-    print("\n--- Node: Scraping Website for Hook Generation ---")
-    content = "No website data available."
-    url = "N/A"
+    print("\n--- Node: Fallback - Scraping Company Website ---")
+    content, url = "No data available.", "N/A"
     try:
-        prospect = state['prospect']
-        website_url = prospect.get('organization', {}).get('primary_domain')
-        if not website_url: raise ValueError("No website URL found.")
-
+        website_url = state['prospect']['organization']['primary_domain']
         if not website_url.startswith(('http://', 'https://')):
             website_url = 'https://' + website_url
         url = website_url
-
         app = FirecrawlApp(api_key=os.getenv("FIRECRAWL_API_KEY"))
         scraped_data = app.scrape(url)
-
         if scraped_data and scraped_data.markdown:
             content = scraped_data.markdown
-            print("  - Successfully scraped website content.")
-            print(f"\n Scraped data: \n {content}")
+            print("  - Successfully scraped website markdown.")
         else:
-            raise ValueError("FireCrawl failed to extract markdown content.")
-
+            raise ValueError("FireCrawl failed on website scrape.")
     except Exception as e:
-        print(f"  - An error occurred during website scraping: {e}")
-        content = f"An error occurred during scraping: {e}"
+        print(f"  - An error occurred during website scrape: {e}")
+        content = f"Error: {e}"
 
-    return {"website_content": content, "source_url": url}
+    return {"company_research": content, "source_url": url}
 
 def synthesize_hook_from_website(state: AgentState) -> Dict:
     """
@@ -418,3 +414,173 @@ def generate_email(prospect: Dict, hook: str) -> Optional[str]:
     except Exception as e:
         print(f"  - An error occurred during email generation: {e}")
         return None
+    
+
+def generate_research_question(state: AgentState) -> Dict:
+    """
+    Generates a CONCISE research question for Tavily.
+    """
+
+    print("\n--- Node: 1. Generating Research Question ---")
+    prospect = state['prospect']
+    prospect_name = prospect.get('name', '')
+    company_name = prospect.get('organization', {}).get('name', '')
+    
+    try:
+        prompt = (
+            "You are an expert research analyst. Your task is to generate a single, concise search query for the Tavily search API. "
+            f"The query will be used to find a personalized hook for '{prospect_name}' from '{company_name}'.\n"
+            "Focus on finding their most recent significant news, achievements, or public statements.\n\n"
+            "CRITICAL RULE: The output must be a single question or a concise search phrase, and nothing else. Do not answer the question."
+        )
+        
+        model = genai.GenerativeModel('gemini-2.5-flash')
+        safety_settings = {'HARM_CATEGORY_HARASSMENT': 'BLOCK_NONE', 'HARM_CATEGORY_HATE_SPEECH': 'BLOCK_NONE', 'HARM_CATEGORY_SEXUALLY_EXPLICIT': 'BLOCK_NONE', 'HARM_CATEGORY_DANGEROUS_CONTENT': 'BLOCK_NONE'}
+        
+        response = model.generate_content(prompt, safety_settings=safety_settings)
+        question = response.text.strip()
+
+        if len(question) > 400:
+            question = question[:399]
+            
+        print(f"  - Generated Question: {question}")
+        return {"research_question": question}
+    except Exception as e:
+        print(f"  - Error generating question: {e}")
+        return {"research_question": f"Error: {e}"}
+    
+def execute_tavily_research(state: AgentState) -> Dict:
+    """Executes a search query using the Tavily API with robust error handling."""
+    print("\n--- Node: 2. Executing Tavily Research ---")
+    query = state.get("research_question")
+    
+    summary = f"Failed to execute Tavily search for query: {query}"
+    source_url = "N/A"
+
+    if not query or "Error:" in query:
+        summary = "Failed to generate a valid research question."
+    else:
+        try:
+            api_key = os.getenv("TAVILY_API_KEY")
+            if not api_key:
+                raise ValueError("TAVILY_API_KEY not found in environment. Please check your .env file.")
+            
+            tavily_client = TavilyClient(api_key=api_key)
+            
+            response = tavily_client.search(query=query, search_depth="advanced")
+
+            if response and response.get('answer'):
+                summary = response.get('answer')
+                print(f"  - Tavily Answer Found: {summary[:200]}...")
+                results = response.get('results')
+                if results and isinstance(results, list) and len(results) > 0:
+                    source_url = results[0].get('url', 'N/A')
+            else:
+                summary = "Tavily search returned no answer."
+                print("  - Tavily search completed but returned no direct answer.")
+
+        except Exception as e:
+            print(f"  - An error occurred during Tavily search: {e}")
+            summary = f"An error occurred during Tavily search: {e}"
+            
+    return {"research_summary": summary, "source_url": source_url}
+    
+def synthesize_hook_from_tavily(state: AgentState) -> Dict:
+    """
+    Uses the Tavily research summary and a specific prompt to create a hook.
+    """
+
+    print("\n--- Node: 3. Synthesizing Hook (from Tavily) ---")
+    research_summary = state.get('research_summary', '')
+    prospect = state.get('prospect', {})
+    if "Error:" in research_summary or "Failed" in research_summary or "No direct answer" in research_summary:
+         print(f"  - Invalid research summary received: {research_summary}")
+         return {"hook": "No compelling hook found."}
+    try:
+        model = genai.GenerativeModel('gemini-2.5-pro')
+
+        prompt_template = load_prompt("synthesize_hook_from_tavily.md")
+        prompt = prompt_template.format(
+            prospect_first_name=prospect.get('name', '').split(' ')[0],
+            research_summary=research_summary
+        )
+        response = model.generate_content(prompt)
+        hook = response.text.strip()
+        print(f"  - Synthesized Hook: {hook}")
+        return {"hook": hook}
+    except Exception as e:
+        print(f"  - An error occurred during hook synthesis: {e}")
+        return {"hook": "No compelling hook found."}
+    
+def should_fallback_to_website(state: AgentState) -> str:
+    """
+    Edge: Checks if Tavily failed. If so, routes to website scrape.
+    """
+
+    print("\n--- Edge: Evaluating Tavily Result ---")
+    person_research = state.get('person_research', '')
+    
+    if "Error" in person_research or "Failed" in person_research or "No direct answer" in person_research or not person_research:
+        print("  - Tavily failed or empty. Falling back to company website scrape.")
+        return "fallback_to_website"
+    else:
+        print("  - Tavily succeeded. Proceeding to hook synthesis.")
+        
+        state['company_research'] = ""
+        return "continue_to_synthesis"
+
+def synthesize_final_hook(state: AgentState) -> Dict:
+    """
+    FINAL Node: The 'Selector' that chooses the best hook from all available intelligence.
+    """
+
+    print("\n--- Node: 4. Synthesizing Final Hook ---")
+    person_research = state.get('person_research', '')
+    company_research = state.get('company_research', '') 
+    prospect = state.get('prospect', {})
+    hook = "No compelling hook found."
+    try:
+        model = genai.GenerativeModel('gemini-2.5-pro')
+        prompt_template = load_prompt("synthesize_hook_from_website.md")
+        prompt = prompt_template.format(
+            person_research=person_research,
+            company_research=company_research,
+            prospect_first_name=prospect.get('name', '').split(' ')[0]
+        )
+        safety_settings = {'HARM_CATEGORY_HARASSMENT': 'BLOCK_NONE', 'HARM_CATEGORY_HATE_SPEECH': 'BLOCK_NONE', 'HARM_CATEGORY_SEXUALLY_EXPLICIT': 'BLOCK_NONE', 'HARM_CATEGORY_DANGEROUS_CONTENT': 'BLOCK_NONE'}
+        response = model.generate_content(prompt, safety_settings=safety_settings)
+        hook = response.text.strip()
+        print(f"  - Final Synthesized Hook: {hook}")
+    except Exception as e:
+        print(f"  - An error occurred during final synthesis: {e}")
+    return {"hook": hook}
+    
+def build_agent_graph():
+    """
+    Builds the final, Dual-Pronged agent graph.
+    """
+
+    load_dotenv(); genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+    graph = StateGraph(AgentState)
+
+    graph.add_node("generate_research_question", generate_research_question)
+    graph.add_node("execute_tavily_research", execute_tavily_research)
+    graph.add_node("scrape_company_website", scrape_company_website)
+    graph.add_node("synthesize_final_hook", synthesize_final_hook)
+
+    graph.set_entry_point("generate_research_question")
+    graph.add_edge("generate_research_question", "execute_tavily_research")
+
+    graph.add_conditional_edges(
+        "execute_tavily_research",
+        should_fallback_to_website,
+        {
+            "fallback_to_website": "scrape_company_website",
+            "continue_to_synthesis": "synthesize_final_hook"
+        }
+    )
+
+    graph.add_edge("scrape_company_website", "synthesize_final_hook")
+    graph.add_edge("synthesize_final_hook", END)
+
+    return graph.compile()
