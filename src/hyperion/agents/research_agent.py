@@ -382,7 +382,7 @@ def synthesize_hook_from_website(state: AgentState) -> Dict:
         )
         
         response = model.generate_content(prompt)
-        # We take the last line of the response, as the model might do some chain-of-thought first
+        # we take the last line of the response, as the model might do some chain-of-thought first
         hook = response.text.strip().split('\n')[-1].replace("Generated Hook:", "").strip()
         
         print(f"  - Synthesized Hook: {hook}")
@@ -391,12 +391,14 @@ def synthesize_hook_from_website(state: AgentState) -> Dict:
         print(f"  - An error occurred during hook synthesis: {e}")
         return {"hook": None}
 
-def generate_email(prospect: Dict, hook: str) -> Optional[str]:
+def generate_email(prospect: Dict, hook: str, state:AgentState) -> Optional[str]:
     """Uses Gemini 2.5 Pro and an external template to generate the final email."""
     print("\n--- Node: Generating Final Email (from template) ---")
     try:
         load_dotenv()
         genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+
+        website_content = state.get('website_content', '')
         
         prompt_template = load_prompt("generate_email.md")
         prompt = prompt_template.format(
@@ -405,7 +407,8 @@ def generate_email(prospect: Dict, hook: str) -> Optional[str]:
             company_name=prospect.get('organization', {}).get('name', ''),
             hook=hook,
             your_agency_name=os.getenv("AGENCY_NAME"),
-            your_agency_value_prop=os.getenv("AGENCY_VALUE_PROP")
+            your_agency_value_prop=os.getenv("AGENCY_VALUE_PROP"),
+            website_content=website_content[:10000]
         )
         model = genai.GenerativeModel('gemini-2.5-pro')
         response = model.generate_content(prompt)

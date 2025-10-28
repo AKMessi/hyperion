@@ -76,6 +76,8 @@ company_name: {company_name}
 
 hook: {hook}
 
+website_content: {website_content}
+
 Output Format: Subject: [Your generated subject line]
 
 [Your generated email body]

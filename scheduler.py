@@ -45,7 +45,7 @@ def run_scheduler():
 
                         if hook and "No compelling hook found." not in hook:
                             print(f"    -> AI Research successful. Hook: '{hook}'")
-                            email_content = generate_email(prospect, hook)
+                            email_content = generate_email(prospect, hook, final_state)
                             
                             if email_content:
                                 try:
