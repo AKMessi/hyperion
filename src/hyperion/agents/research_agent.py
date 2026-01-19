@@ -12,6 +12,66 @@ import io
 from pypdf import PdfReader
 from src.hyperion.config import PROJECT_ROOT
 from tavily import TavilyClient
+from google.generativeai import types
+
+def safe_gemini_generate(model, prompt, context_name="Unknown"):
+    """
+    Safely calls Gemini with comprehensive error handling.
+    Returns: (success: bool, text: str, error_msg: str)
+    """
+    try:
+        response = model.generate_content(prompt)
+        
+        # Check if response exists
+        if not response:
+            return False, "", f"{context_name}: No response object returned"
+        
+        # Check for prompt feedback (blocked before generation)
+        if hasattr(response, 'prompt_feedback') and response.prompt_feedback:
+            if hasattr(response.prompt_feedback, 'block_reason'):
+                return False, "", f"{context_name}: Prompt blocked - {response.prompt_feedback.block_reason}"
+        
+        # Check if candidates exist
+        if not response.candidates or len(response.candidates) == 0:
+            return False, "", f"{context_name}: No candidates returned"
+        
+        candidate = response.candidates[0]
+        
+        # Check finish reason
+        finish_reasons = {
+            0: "UNSPECIFIED",
+            1: "STOP",  # This is actually success
+            2: "MAX_TOKENS",
+            3: "SAFETY",
+            4: "RECITATION",
+            5: "OTHER"
+        }
+        
+        finish_reason_name = finish_reasons.get(candidate.finish_reason, "UNKNOWN")
+        
+        # If not STOP, something went wrong
+        if candidate.finish_reason != 1:
+            error_details = f"Finish reason: {finish_reason_name}"
+            if hasattr(candidate, 'safety_ratings'):
+                error_details += f", Safety: {candidate.safety_ratings}"
+            return False, "", f"{context_name}: {error_details}"
+        
+        # Check if content parts exist
+        if not candidate.content or not candidate.content.parts:
+            return False, "", f"{context_name}: No content parts (finish_reason was STOP but no content)"
+        
+        # Extract text
+        text = response.text.strip()
+        
+        if not text:
+            return False, "", f"{context_name}: Empty text returned"
+        
+        return True, text, ""
+        
+    except AttributeError as e:
+        return False, "", f"{context_name}: Attribute error - {str(e)}"
+    except Exception as e:
+        return False, "", f"{context_name}: Exception - {str(e)}"
 
 def load_prompt(file_name: str) -> str:
     """Loads a prompt template from the prompts directory."""
@@ -59,7 +119,7 @@ def scrape_website_for_context(state: AgentState) -> Dict:
             return {"website_context": "Failed to retrieve website data."}
         
         content = scraped_data.markdown
-        model = genai.GenerativeModel('gemini-2.5-flash')
+        model = genai.GenerativeModel('gemini-3-flash-preview')
         prompt = f"Summarize what this company does in one single, concise sentence based on their website content:\n\n{content[:10000]}"
         response = model.generate_content(prompt)
         summary = response.text.strip()
@@ -82,7 +142,7 @@ def generate_search_queries(state: AgentState) -> Dict:
     company_name = prospect.get('organization', {}).get('name', '')
 
     print(f"\n--- Node: Generating Search Queries (with context) ---")
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    model = genai.GenerativeModel('gemini-3-flash-preview')
     
     prompt = (
         f"You are a research analyst. You are researching a person named '{prospect_name}' at a company called '{company_name}'.\n"
@@ -159,7 +219,7 @@ def scrape_and_summarize_content(state: AgentState) -> Dict:
             
             if content:
                 print("  - Successfully extracted content.")
-                model = genai.GenerativeModel('gemini-2.5-flash')
+                model = genai.GenerativeModel('gemini-3-flash-preview')
                 prompt = f"Summarize the following text in 2-3 sentences:\n\n{content[:15000]}"
                 summaries.append(model.generate_content(prompt).text)
             else:
@@ -170,37 +230,53 @@ def scrape_and_summarize_content(state: AgentState) -> Dict:
     
     return {"summaries": summaries}
 
-def synthesize_hook(state: AgentState) -> Dict:
+def synthesize_final_hook(state: AgentState) -> Dict:
     """
-    Node: Synthesizes a personalized hook from the summaries.
+    FINAL Node: The 'Selector' that chooses the best hook from all available intelligence.
     """
-
-    summaries = state['summaries']
-    prospect = state['prospect']
-    prospect_name = prospect.get('name', '')
-
-    print("\n--- Node: Synthesizing Hook ---")
-
-    if not summaries:
-        print("No summaries to synthesize from.")
-        return {"hook": None}
-
-    full_summary = "\n\n".join(summaries)
+    print("\n--- Node: 4. Synthesizing Final Hook ---")
     
-    model = genai.GenerativeModel('gemini-2.5-pro')
-
-    prompt = (
-        "You are an expert-level Sales Development Representative. Your task is to write a single, compelling, personalized sentence to use as a 'hook' in a cold email. "
-        f"You will be given a collection of summaries from recent news articles. Your hook should directly reference the most interesting piece of information and feel personal to the recipient, '{prospect_name}'.\n"
-        "Rules:\n1. Must be a single sentence.\n2. Must be concise and sound natural.\n3. Must NOT be a question.\n\n"
-        f"Use the following summaries to generate a hook for {prospect_name}:\n\n"
-        f"Summaries:\n---\n{full_summary}"
-    )
-    response = model.generate_content(prompt)
-    hook = response.text.strip().replace('"', '')
+    person_research = state.get('person_research', '')
+    company_research = state.get('company_research', '') 
+    prospect = state.get('prospect', {})
     
-    print(f"Synthesized Hook: {hook}")
-    return {"hook": hook}
+    try:
+        model = genai.GenerativeModel(
+            'gemini-3-flash-preview',
+            safety_settings={
+                genai.types.HarmCategory.HARM_CATEGORY_HATE_SPEECH: genai.types.HarmBlockThreshold.BLOCK_NONE,
+                genai.types.HarmCategory.HARM_CATEGORY_HARASSMENT: genai.types.HarmBlockThreshold.BLOCK_NONE,
+                genai.types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: genai.types.HarmBlockThreshold.BLOCK_NONE,
+                genai.types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: genai.types.HarmBlockThreshold.BLOCK_NONE,
+            }
+        )
+        
+        prompt_template = load_prompt("synthesize_hook_from_website.md")
+        prompt = prompt_template.format(
+            person_research=person_research,
+            company_research=company_research,
+            prospect_first_name=prospect.get('name', '').split(' ')[0]
+        )
+        
+        # Use the safe wrapper
+        success, hook, error = safe_gemini_generate(model, prompt, "synthesize_final_hook")
+        
+        if not success:
+            print(f"  - ❌ Failed to generate hook: {error}")
+            # Fallback: create a simple hook from company name
+            company_name = prospect.get('organization', {}).get('name', 'your company')
+            hook = f"I noticed {company_name}'s recent growth."
+            print(f"  - Using fallback hook: {hook}")
+        else:
+            print(f"  - ✅ Final Synthesized Hook: {hook}")
+        
+        return {"hook": hook}
+        
+    except Exception as e:
+        print(f"  - ❌ Exception in synthesize_final_hook: {e}")
+        company_name = prospect.get('organization', {}).get('name', 'your company')
+        fallback_hook = f"I noticed {company_name}'s recent growth."
+        return {"hook": fallback_hook}
 
 def should_continue(state: AgentState) -> str:
     """
@@ -369,7 +445,7 @@ def synthesize_hook_from_website(state: AgentState) -> Dict:
         return {"hook": None}
 
     try:
-        model = genai.GenerativeModel('gemini-2.5-pro')
+        model = genai.GenerativeModel('gemini-3-flash-preview')
         prompt_template = load_prompt("synthesize_hook_from_website.md")
         prospect_first_name = prospect.get('name', '').split(' ')[0]
         prospect_title = prospect.get('title', 'a key leader')
@@ -391,66 +467,155 @@ def synthesize_hook_from_website(state: AgentState) -> Dict:
         print(f"  - An error occurred during hook synthesis: {e}")
         return {"hook": None}
 
-def generate_email(prospect: Dict, hook: str, state:AgentState) -> Optional[str]:
+def generate_email(prospect: Dict, hook: str, state: AgentState) -> Optional[str]:
     """Uses Gemini 2.5 Pro and an external template to generate the final email."""
     print("\n--- Node: Generating Final Email (from template) ---")
     try:
         load_dotenv()
         genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
-        website_content = state.get('website_content', '')
+        website_content = state.get('company_research', '')
         
+        # Load the template
         prompt_template = load_prompt("generate_email.md")
-        prompt = prompt_template.format(
-            prospect_first_name=prospect.get('name', '').split(' ')[0],
-            prospect_title=prospect.get('title', 'a key leader'),
-            company_name=prospect.get('organization', {}).get('name', ''),
-            hook=hook,
-            your_agency_name=os.getenv("AGENCY_NAME"),
-            your_agency_value_prop=os.getenv("AGENCY_VALUE_PROP"),
-            website_content=website_content[:10000]
+        
+        # Extract variables
+        prospect_first_name = prospect.get('name', '').split(' ')[0]
+        prospect_title = prospect.get('title', 'a key leader')
+        company_name = prospect.get('organization', {}).get('name', '')
+        agency_name = os.getenv("AGENCY_NAME", "Get AI Simplified")
+        agency_value_prop = os.getenv("AGENCY_VALUE_PROP", "We build autonomous AI agents")
+        
+        # Replace variables safely
+        prompt = prompt_template
+        prompt = prompt.replace('{prospect_first_name}', prospect_first_name)
+        prompt = prompt.replace('{prospect_title}', prospect_title)
+        prompt = prompt.replace('{company_name}', company_name)
+        prompt = prompt.replace('{hook}', hook)
+        prompt = prompt.replace('{website_content}', website_content[:10000])
+        prompt = prompt.replace('{your_agency_name}', agency_name)
+        prompt = prompt.replace('{your_agency_value_prop}', agency_value_prop)
+        
+        # Configure model with ALL safety settings off
+        model = genai.GenerativeModel(
+            'gemini-3-flash-preview',
+            safety_settings={
+                genai.types.HarmCategory.HARM_CATEGORY_HATE_SPEECH: genai.types.HarmBlockThreshold.BLOCK_NONE,
+                genai.types.HarmCategory.HARM_CATEGORY_HARASSMENT: genai.types.HarmBlockThreshold.BLOCK_NONE,
+                genai.types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: genai.types.HarmBlockThreshold.BLOCK_NONE,
+                genai.types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: genai.types.HarmBlockThreshold.BLOCK_NONE,
+            }
         )
-        model = genai.GenerativeModel('gemini-2.5-pro')
+        
         response = model.generate_content(prompt)
-        print("  - Successfully generated email from upgraded template.")
-        return response.text.strip()
+        
+        # Detailed error checking
+        if not response.candidates:
+            print(f"  - ❌ No candidates returned")
+            print(f"  - Prompt feedback: {response.prompt_feedback}")
+            return None
+        
+        candidate = response.candidates[0]
+        
+        if candidate.finish_reason != 1:  # 1 = STOP (success)
+            finish_reasons = {
+                0: "FINISH_REASON_UNSPECIFIED",
+                1: "STOP",
+                2: "MAX_TOKENS",
+                3: "SAFETY",
+                4: "RECITATION",
+                5: "OTHER"
+            }
+            reason = finish_reasons.get(candidate.finish_reason, "UNKNOWN")
+            print(f"  - ❌ Generation blocked: {reason}")
+            print(f"  - Safety ratings: {candidate.safety_ratings}")
+            
+            # If blocked by safety, try with a simpler prompt
+            if candidate.finish_reason == 3:
+                print(f"  - Attempting fallback email generation...")
+                return generate_fallback_email(prospect, hook)
+            
+            return None
+        
+        if not candidate.content.parts:
+            print(f"  - ❌ No content parts in response")
+            return None
+        
+        email_text = response.text.strip()
+        print("  - ✅ Successfully generated email")
+        return email_text
+        
     except Exception as e:
-        print(f"  - An error occurred during email generation: {e}")
-        return None
+        print(f"  - ❌ Exception during email generation: {e}")
+        print(f"  - Attempting fallback email generation...")
+        return generate_fallback_email(prospect, hook)
+
+
+def generate_fallback_email(prospect: Dict, hook: str) -> str:
+    """
+    Generates a basic but effective email when the AI generation fails.
+    This ensures the system never fully fails.
+    """
+    print("  - Using fallback email template...")
+    
+    prospect_first_name = prospect.get('name', '').split(' ')[0]
+    company_name = prospect.get('organization', {}).get('name', '')
+    
+    # Simple, proven email template
+    subject = f"quick question about {company_name}"
+    
+    body = f"""Hi {prospect_first_name},
+
+    {hook}
+
+    That got me thinking about how much manual work goes into finding insights like this. I built an AI agent that does this research automatically - it's how I found yours.
+
+    Curious if you're exploring AI for any similar workflows?
+
+    Best,
+    Aaryan"""
+    
+    return f"Subject: {subject}\n\n{body}"
     
 
 def generate_research_question(state: AgentState) -> Dict:
     """
     Generates a CONCISE research question for Tavily.
     """
-
     print("\n--- Node: 1. Generating Research Question ---")
     prospect = state['prospect']
     prospect_name = prospect.get('name', '')
     company_name = prospect.get('organization', {}).get('name', '')
     
-    try:
-        prompt = (
-            "You are an expert research analyst. Your task is to generate a single, concise search query for the Tavily search API. "
-            f"The query will be used to find a personalized hook for '{prospect_name}' from '{company_name}'.\n"
-            "Focus on finding their most recent significant news, achievements, or public statements.\n\n"
-            "CRITICAL RULE: The output must be a single question or a concise search phrase, and nothing else. Do not answer the question."
-        )
-        
-        model = genai.GenerativeModel('gemini-2.5-flash')
-        safety_settings = {'HARM_CATEGORY_HARASSMENT': 'BLOCK_NONE', 'HARM_CATEGORY_HATE_SPEECH': 'BLOCK_NONE', 'HARM_CATEGORY_SEXUALLY_EXPLICIT': 'BLOCK_NONE', 'HARM_CATEGORY_DANGEROUS_CONTENT': 'BLOCK_NONE'}
-        
-        response = model.generate_content(prompt, safety_settings=safety_settings)
-        question = response.text.strip()
-
+    prompt = (
+        "You are an expert research analyst. Generate a single, concise search query. "
+        f"Find a personalized hook for '{prospect_name}' from '{company_name}'.\n"
+        "Focus on recent news, achievements, or public statements.\n"
+        "Output: Single question or search phrase only. No explanation."
+    )
+    
+    model = genai.GenerativeModel(
+        'gemini-3-flash-preview',
+        safety_settings={
+            genai.types.HarmCategory.HARM_CATEGORY_HATE_SPEECH: genai.types.HarmBlockThreshold.BLOCK_NONE,
+            genai.types.HarmCategory.HARM_CATEGORY_HARASSMENT: genai.types.HarmBlockThreshold.BLOCK_NONE,
+            genai.types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: genai.types.HarmBlockThreshold.BLOCK_NONE,
+            genai.types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: genai.types.HarmBlockThreshold.BLOCK_NONE,
+        }
+    )
+    
+    success, question, error = safe_gemini_generate(model, prompt, "generate_research_question")
+    
+    if not success:
+        print(f"  - ❌ Failed: {error}")
+        question = f"recent news about {prospect_name} at {company_name}"
+        print(f"  - Using fallback query: {question}")
+    else:
         if len(question) > 400:
             question = question[:399]
-            
-        print(f"  - Generated Question: {question}")
-        return {"research_question": question}
-    except Exception as e:
-        print(f"  - Error generating question: {e}")
-        return {"research_question": f"Error: {e}"}
+        print(f"  - ✅ Generated Question: {question}")
+    
+    return {"research_question": question}
     
 def execute_tavily_research(state: AgentState) -> Dict:
     """Executes a search query using the Tavily API with robust error handling."""
@@ -490,29 +655,45 @@ def execute_tavily_research(state: AgentState) -> Dict:
     
 def synthesize_hook_from_tavily(state: AgentState) -> Dict:
     """
-    Uses the Tavily research summary and a specific prompt to create a hook.
+    Uses the Tavily research summary to create a hook.
     """
-
     print("\n--- Node: 3. Synthesizing Hook (from Tavily) ---")
     research_summary = state.get('research_summary', '')
     prospect = state.get('prospect', {})
-    if "Error:" in research_summary or "Failed" in research_summary or "No direct answer" in research_summary:
-         print(f"  - Invalid research summary received: {research_summary}")
-         return {"hook": "No compelling hook found."}
+    
+    if "Error:" in research_summary or "Failed" in research_summary:
+        print(f"  - Invalid research summary: {research_summary}")
+        return {"hook": "No compelling hook found."}
+    
     try:
-        model = genai.GenerativeModel('gemini-2.5-pro')
+        model = genai.GenerativeModel(
+            'gemini-3-flash-preview',
+            safety_settings={
+                genai.types.HarmCategory.HARM_CATEGORY_HATE_SPEECH: genai.types.HarmBlockThreshold.BLOCK_NONE,
+                genai.types.HarmCategory.HARM_CATEGORY_HARASSMENT: genai.types.HarmBlockThreshold.BLOCK_NONE,
+                genai.types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: genai.types.HarmBlockThreshold.BLOCK_NONE,
+                genai.types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: genai.types.HarmBlockThreshold.BLOCK_NONE,
+            }
+        )
 
         prompt_template = load_prompt("synthesize_hook_from_tavily.md")
         prompt = prompt_template.format(
             prospect_first_name=prospect.get('name', '').split(' ')[0],
             research_summary=research_summary
         )
-        response = model.generate_content(prompt)
-        hook = response.text.strip()
-        print(f"  - Synthesized Hook: {hook}")
+        
+        success, hook, error = safe_gemini_generate(model, prompt, "synthesize_hook_from_tavily")
+        
+        if not success:
+            print(f"  - ❌ Failed: {error}")
+            hook = "No compelling hook found."
+        else:
+            print(f"  - ✅ Synthesized Hook: {hook}")
+        
         return {"hook": hook}
+        
     except Exception as e:
-        print(f"  - An error occurred during hook synthesis: {e}")
+        print(f"  - ❌ Exception: {e}")
         return {"hook": "No compelling hook found."}
     
 def should_fallback_to_website(state: AgentState) -> str:
@@ -543,7 +724,7 @@ def synthesize_final_hook(state: AgentState) -> Dict:
     prospect = state.get('prospect', {})
     hook = "No compelling hook found."
     try:
-        model = genai.GenerativeModel('gemini-2.5-pro')
+        model = genai.GenerativeModel('gemini-3-flash-preview')
         prompt_template = load_prompt("synthesize_hook_from_website.md")
         prompt = prompt_template.format(
             person_research=person_research,
